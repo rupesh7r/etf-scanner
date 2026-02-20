@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 import asyncio
 from telegram import Bot
+from datetime import datetime
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -16,6 +17,9 @@ ETFS = [
     {"name": "Gold BeES", "yahoo": "GOLDBEES.NS", "amfi": "120503", "ratio": 1.1658},
     {"name": "Nifty Next 50", "yahoo": "JUNIORBEES.NS", "amfi": "120823", "ratio": 1.179},
 ]
+
+# Store daily gaps for summary
+daily_gaps = []
 
 def get_nav(amfi_code):
     url = f"https://api.mfapi.in/mf/{amfi_code}"
@@ -53,6 +57,15 @@ def scan():
         discrepancy = ((price - adjusted_nav) / adjusted_nav) * 100
         print(f"{etf['name']}: NAV ₹{adjusted_nav:.3f} | Price ₹{price} | Gap {discrepancy:.2f}%")
 
+        # Store for daily summary
+        daily_gaps.append({
+            "name": etf['name'],
+            "gap": discrepancy,
+            "price": price,
+            "nav": adjusted_nav,
+            "time": datetime.now().strftime("%H:%M")
+        })
+
         if discrepancy > 0.5:
             message = (
                 f"🚨 <b>{etf['name']} — PREMIUM ALERT</b>\n\n"
@@ -82,8 +95,56 @@ def scan():
 
     print("Scan complete.\n")
 
+def send_daily_summary():
+    print("Sending daily summary...")
+    if not daily_gaps:
+        return
+
+    # Find biggest gaps of the day
+    biggest = sorted(daily_gaps, key=lambda x: abs(x['gap']), reverse=True)[:4]
+
+    lines = ""
+    for item in biggest:
+        emoji = "🔴" if item['gap'] > 0 else "🟢" if item['gap'] < 0 else "⚪"
+        lines += f"{emoji} {item['name']}: {item['gap']:+.2f}% at ₹{item['price']}\n"
+
+    message = (
+        f"📊 <b>Daily ETF Summary — {datetime.now().strftime('%d %b %Y')}</b>\n\n"
+        f"Here's how ETFs traded vs their NAV today:\n\n"
+        f"{lines}\n"
+        f"🔴 = Premium (overpriced) | 🟢 = Discount (opportunity)\n\n"
+        f"Market hours tomorrow: 9:15AM – 3:30PM"
+    )
+    asyncio.run(send_telegram(message))
+    daily_gaps.clear()
+    print("Daily summary sent!")
+
+def send_morning_briefing():
+    print("Sending morning briefing...")
+    message = (
+        f"🌅 <b>Good Morning — Market Opens in 15 mins!</b>\n\n"
+        f"We'll be scanning these ETFs every 5 minutes today:\n"
+        f"• Nifty BeES\n"
+        f"• Bank BeES\n"
+        f"• Gold BeES\n"
+        f"• Nifty Next 50\n\n"
+        f"You'll get instant alerts if any ETF trades at significant premium or discount to its NAV.\n\n"
+        f"Market hours: 9:15AM – 3:30PM 🇮🇳"
+    )
+    asyncio.run(send_telegram(message))
+    print("Morning briefing sent!")
+
+# Run scan immediately
 scan()
+
+# Schedule scans every 5 minutes
 schedule.every(5).minutes.do(scan)
+
+# Morning briefing at 9:00 AM IST
+schedule.every().day.at("03:30").do(send_morning_briefing)  # 9:00 AM IST = 3:30 UTC
+
+# Daily summary at 3:30 PM IST
+schedule.every().day.at("10:00").do(send_daily_summary)  # 3:30 PM IST = 10:00 UTC
 
 while True:
     schedule.run_pending()

@@ -18,7 +18,8 @@ ETFS = [
     {"name": "Nifty Next 50", "yahoo": "JUNIORBEES.NS", "amfi": "120823", "ratio": 1.179},
 ]
 
-# Store daily gaps for summary
+# Track last alert sent per ETF to avoid spam
+last_alert = {}
 daily_gaps = []
 
 def get_nav(amfi_code):
@@ -43,6 +44,17 @@ async def send_telegram(message):
     bot = Bot(token=BOT_TOKEN)
     await bot.send_message(chat_id=CHANNEL_ID, text=message, parse_mode='HTML')
 
+def should_alert(etf_name, current_gap):
+    # Only alert if:
+    # 1. Never alerted before for this ETF today
+    # 2. Gap has changed by more than 0.5% since last alert
+    if etf_name not in last_alert:
+        return True
+    last_gap = last_alert[etf_name]['gap']
+    if abs(current_gap - last_gap) > 0.25:
+        return True
+    return False
+
 def scan():
     print("Scanning all ETFs...")
     for etf in ETFS:
@@ -66,7 +78,7 @@ def scan():
             "time": datetime.now().strftime("%H:%M")
         })
 
-        if discrepancy > 0.5:
+        if discrepancy > 0.5 and should_alert(etf['name'], discrepancy):
             message = (
                 f"🚨 <b>{etf['name']} — PREMIUM ALERT</b>\n\n"
                 f"📈 Market Price: ₹{price}\n"
@@ -76,9 +88,10 @@ def scan():
                 f"Historically this gap closes within 1-2 sessions."
             )
             asyncio.run(send_telegram(message))
+            last_alert[etf['name']] = {'gap': discrepancy}
             print(f"{etf['name']}: Alert sent!")
 
-        elif discrepancy < -0.5:
+        elif discrepancy < -0.5 and should_alert(etf['name'], discrepancy):
             message = (
                 f"🟢 <b>{etf['name']} — DISCOUNT ALERT</b>\n\n"
                 f"📉 Market Price: ₹{price}\n"
@@ -88,7 +101,13 @@ def scan():
                 f"Potential buy opportunity. Gap usually closes within 1-2 sessions."
             )
             asyncio.run(send_telegram(message))
+            last_alert[etf['name']] = {'gap': discrepancy}
             print(f"{etf['name']}: Alert sent!")
+
+        elif abs(discrepancy) <= 0.5 and etf['name'] in last_alert:
+            # Gap closed — reset so we can alert again next time
+            del last_alert[etf['name']]
+            print(f"{etf['name']}: Gap closed, reset alert.")
 
         else:
             print(f"{etf['name']}: No significant gap ({discrepancy:.2f}%)")
@@ -100,9 +119,7 @@ def send_daily_summary():
     if not daily_gaps:
         return
 
-    # Find biggest gaps of the day
     biggest = sorted(daily_gaps, key=lambda x: abs(x['gap']), reverse=True)[:4]
-
     lines = ""
     for item in biggest:
         emoji = "🔴" if item['gap'] > 0 else "🟢" if item['gap'] < 0 else "⚪"
@@ -117,13 +134,14 @@ def send_daily_summary():
     )
     asyncio.run(send_telegram(message))
     daily_gaps.clear()
+    last_alert.clear()
     print("Daily summary sent!")
 
 def send_morning_briefing():
     print("Sending morning briefing...")
     message = (
         f"🌅 <b>Good Morning — Market Opens in 15 mins!</b>\n\n"
-        f"We'll be scanning these ETFs every 5 minutes today:\n"
+        f"Scanning these ETFs every 5 minutes today:\n"
         f"• Nifty BeES\n"
         f"• Bank BeES\n"
         f"• Gold BeES\n"
@@ -134,17 +152,10 @@ def send_morning_briefing():
     asyncio.run(send_telegram(message))
     print("Morning briefing sent!")
 
-# Run scan immediately
 scan()
-
-# Schedule scans every 5 minutes
 schedule.every(5).minutes.do(scan)
-
-# Morning briefing at 9:00 AM IST
-schedule.every().day.at("03:30").do(send_morning_briefing)  # 9:00 AM IST = 3:30 UTC
-
-# Daily summary at 3:30 PM IST
-schedule.every().day.at("10:00").do(send_daily_summary)  # 3:30 PM IST = 10:00 UTC
+schedule.every().day.at("03:30").do(send_morning_briefing)
+schedule.every().day.at("10:00").do(send_daily_summary)
 
 while True:
     schedule.run_pending()
